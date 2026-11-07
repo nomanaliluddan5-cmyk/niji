@@ -156,6 +156,7 @@ export function SaveScreen() {
         <button type="submit" className="solid" disabled={busy}>{busy ? 'Saving…' : 'Save on this device'}</button>
       </form>
 
+      <div className="save-rest">
       <section className="kept">
         {store.data.keeps.length === 0 ? <p className="quiet">Saves show up here, in this browser.</p> : null}
         {store.data.keeps.slice(0, 6).map((item) => (
@@ -169,6 +170,7 @@ export function SaveScreen() {
         ))}
       </section>
       <Inbox />
+      </div>
     </div>
   )
 }

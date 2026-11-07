@@ -1,5 +1,4 @@
 import { useState, type FormEvent } from 'react'
-import { Download, KeyRound, UserRound } from 'lucide-react'
 import { useAccount } from '../lib/accounts'
 import { downloadWindowsPacket } from '../lib/zip'
 import { pathForTab, useGo } from '../router'
@@ -9,77 +8,155 @@ type Door = 'signup' | 'login' | null
 export function LandingPage({ lockedNotice }: { lockedNotice: boolean }) {
   const go = useGo()
   const { account, signup, login } = useAccount()
-  const [door, setDoor] = useState<Door>(null)
+  const [door, setDoor] = useState<Door>(lockedNotice ? 'login' : null)
   const [notice, setNotice] = useState(lockedNotice ? 'Log in to open Niji. The Windows download stays on this page.' : '')
 
   function enter() {
     go(pathForTab('save'))
   }
 
-  return (
-    <div className="landing">
-      <header className="land-top">
-        <span className="mark">Niji</span>
-        <span>Kept on this device</span>
-      </header>
-      <main className="land-main">
-        <p className="kicker">On this device</p>
-        <h1>Niji</h1>
-        <p className="lede">
-          A warm, private place for files, notes, book pages, voice, chats you paste in, and the ordinary day.
-          Sign up, log in, or take the Windows download. Any of the three. Nothing here is sent to a server.
-        </p>
-        <div className="doors" role="group" aria-label="Sign up, log in, or download">
-          <button type="button" className="door" onClick={() => { setDoor('signup'); setNotice('') }}>
-            <UserRound size={18} />
-            <strong>Sign up</strong>
-            <span>Create a Niji account in this browser.</span>
-          </button>
-          <button
-            type="button"
-            className="door"
-            onClick={() => {
-              if (account) enter()
-              else { setDoor('login'); setNotice('') }
-            }}
-          >
-            <KeyRound size={18} />
-            <strong>Log in</strong>
-            <span>{account ? `Continue as ${account.name}.` : 'Open Niji with an account on this device.'}</span>
-          </button>
-          <button
-            type="button"
-            className="door"
-            onClick={() => {
-              downloadWindowsPacket()
-              setNotice('Niji-Windows.zip is downloading.')
-              setDoor(null)
-            }}
-          >
-            <Download size={18} />
-            <strong>Download for Windows</strong>
-            <span>A zip with setup notes and Install-Niji.bat.</span>
-          </button>
-        </div>
-        {notice ? <p className="land-notice">{notice}</p> : null}
-        {door === 'signup' ? <Signup onDone={enter} onClose={() => setDoor(null)} signup={signup} /> : null}
-        {door === 'login' ? <Login onDone={enter} onClose={() => setDoor(null)} login={login} /> : null}
+  function download() {
+    downloadWindowsPacket()
+    setNotice('Niji-Windows.zip is downloading.')
+    setDoor(null)
+  }
 
-        <section className="story" aria-label="What the app holds">
-          <article>
-            <h2>Save anything</h2>
-            <p>A file, a note, a photo of a book page, a voice clip, a document, or a download. Paste a chat from any app into an inbox on this device.</p>
-          </article>
-          <article>
-            <h2>Private folders</h2>
-            <p>Each folder has its own password, color, and settings. Change the password when you want. The lock stays in this browser.</p>
-          </article>
-          <article>
-            <h2>A day, and a game</h2>
-            <p>Notes, tasks, expenses in Rs, a calendar, documents, and a gallery. When the day is quiet, a small matching game is there too.</p>
-          </article>
+  return (
+    <div className="promo" id="home">
+      <header className="promo-bar">
+        <a className="promo-brand" href="#home">
+          <Logo />
+          <strong>Niji</strong>
+        </a>
+        <nav className="promo-nav" aria-label="Niji">
+          <a href="#home">Home</a>
+          <a href="#save-app">Save app</a>
+          <a href="#price">Price</a>
+          <a href="#download">Download</a>
+          <a href="#contact">Contact</a>
+          <button type="button" onClick={() => { setDoor('login'); setNotice('') }}>Login</button>
+        </nav>
+      </header>
+      <section className="promo-hero" aria-label="Niji">
+        <Decor />
+        <div className="promo-stage">
+          <PhoneMock />
+        </div>
+        <div className="promo-copy">
+          <blockquote className="promo-quote">
+            <p>“At the end of the day we are accountable to ourselves. Our success is a result of what we do”</p>
+          </blockquote>
+          <button id="download" type="button" className="promo-download" onClick={download}>
+            Download Now
+          </button>
+          {notice ? <p className="promo-notice">{notice}</p> : null}
+        </div>
+      </section>
+      <div className="promo-sections">
+        <section id="save-app">
+          <h2>Save app</h2>
+          <p>Keep a file, note, book page, voice clip, document, or download on this device. Paste a chat into the inbox. Nothing is sent to a server.</p>
         </section>
-      </main>
+        <section id="price">
+          <h2>Price</h2>
+          <p>Niji is free on this device. The Windows download is a setup guide in Niji-Windows.zip.</p>
+        </section>
+        <section id="contact">
+          <h2>Contact</h2>
+          <p>Niji has no message inbox and no account server. What you save stays in this browser.</p>
+        </section>
+      </div>
+      {door === 'signup' ? (
+        <div className="promo-modal" role="dialog" aria-label="Sign up">
+          <Signup onDone={enter} onClose={() => setDoor(null)} onLogin={() => setDoor('login')} signup={signup} />
+        </div>
+      ) : null}
+      {door === 'login' ? (
+        <div className="promo-modal" role="dialog" aria-label="Log in">
+          <Login
+            onDone={enter}
+            onClose={() => setDoor(null)}
+            onSignup={() => setDoor('signup')}
+            login={login}
+            accountName={account?.name}
+            onContinue={account ? enter : undefined}
+          />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function Logo() {
+  return (
+    <svg viewBox="0 0 64 64" width="42" height="42" aria-hidden="true">
+      <path
+        d="M46 16c-14 0-18 7-18 12 0 6 6 8 16 10 10 2 16 5 16 12 0 8-7 14-18 14S22 58 22 50"
+        fill="none"
+        stroke="white"
+        strokeWidth="5"
+        strokeLinecap="round"
+      />
+      <path d="M18 22c6-8 22-8 28 0" fill="none" stroke="white" strokeWidth="5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function Decor() {
+  return (
+    <svg className="promo-deco" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <g fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="18">
+        <ellipse cx="280" cy="430" rx="210" ry="250" />
+        <ellipse cx="280" cy="430" rx="300" ry="340" />
+      </g>
+      <g fill="rgba(255,255,255,0.28)">
+        <circle cx="980" cy="160" r="5" />
+        <circle cx="1080" cy="230" r="4" />
+        <circle cx="1040" cy="340" r="5" />
+        <circle cx="1140" cy="300" r="4" />
+      </g>
+      <g fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="2">
+        <path d="M980 160 L1080 230 L1120 190 L1200 220" />
+        <path d="M1040 340 L1080 230" />
+      </g>
+    </svg>
+  )
+}
+
+function PhoneMock() {
+  return (
+    <div className="promo-device" aria-hidden="true">
+      <div className="promo-screen">
+        <div className="promo-status">
+          <span>9:41</span>
+          <span>Niji</span>
+        </div>
+        <div className="promo-appbar">
+          <Logo />
+          <span>Niji</span>
+        </div>
+        <p className="promo-screen-label">On this device</p>
+        <div className="promo-grid">
+          {['Save', 'Folders', 'Daily', 'Play', 'Notes', 'Inbox', 'Tasks', 'Expenses', 'Calendar'].map((label) => (
+            <div key={label}>
+              <i />
+              <span>{label}</span>
+            </div>
+          ))}
+        </div>
+        <div className="promo-feed">
+          <strong>Today</strong>
+          <p>Morning page</p>
+          <p>Water plants</p>
+          <p>Tea · Rs 80</p>
+        </div>
+        <div className="promo-dock">
+          <span>Save</span>
+          <span>Folders</span>
+          <span>Daily</span>
+          <span>Play</span>
+        </div>
+      </div>
     </div>
   )
 }
@@ -87,10 +164,12 @@ export function LandingPage({ lockedNotice }: { lockedNotice: boolean }) {
 function Signup({
   onDone,
   onClose,
+  onLogin,
   signup,
 }: {
   onDone: () => void
   onClose: () => void
+  onLogin: () => void
   signup: (input: { name: string; email: string; password: string }) => { error?: string }
 }) {
   const [name, setName] = useState('')
@@ -104,7 +183,7 @@ function Signup({
     else onDone()
   }
   return (
-    <form className="sheet" onSubmit={submit}>
+    <form className="sheet promo-sheet" onSubmit={submit}>
       <div className="sheet-head">
         <h2>Sign up</h2>
         <button type="button" className="text-btn" onClick={onClose}>Close</button>
@@ -115,6 +194,7 @@ function Signup({
       <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" /></label>
       <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></label>
       <button type="submit" className="solid">Create account</button>
+      <p className="promo-switch">Already have a Niji account? <button type="button" onClick={onLogin}>Log in</button></p>
     </form>
   )
 }
@@ -122,11 +202,17 @@ function Signup({
 function Login({
   onDone,
   onClose,
+  onSignup,
   login,
+  accountName,
+  onContinue,
 }: {
   onDone: () => void
   onClose: () => void
+  onSignup: () => void
   login: (input: { email: string; password: string }) => { error?: string }
+  accountName?: string
+  onContinue?: () => void
 }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -138,16 +224,20 @@ function Login({
     else onDone()
   }
   return (
-    <form className="sheet" onSubmit={submit}>
+    <form className="sheet promo-sheet" onSubmit={submit}>
       <div className="sheet-head">
         <h2>Log in</h2>
         <button type="button" className="text-btn" onClick={onClose}>Close</button>
       </div>
       <p>Use the email and password saved for Niji on this device.</p>
+      {accountName && onContinue ? (
+        <button type="button" className="solid" onClick={onContinue}>Continue as {accountName}</button>
+      ) : null}
       {error ? <p className="error-text">{error}</p> : null}
       <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" /></label>
       <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>
       <button type="submit" className="solid">Log in</button>
+      <p className="promo-switch">New to Niji? <button type="button" onClick={onSignup}>Sign up</button></p>
     </form>
   )
 }

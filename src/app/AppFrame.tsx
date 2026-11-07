@@ -16,22 +16,34 @@ const TABS: { id: AppTab; label: string; icon: typeof Bookmark }[] = [
 export function AppFrame({ tab }: { tab: AppTab }) {
   const go = useGo()
   const account = currentAccount()
+  const name = account?.name || 'On this device'
+  const leave = () => {
+    logoutAccount()
+    go('/')
+  }
   return (
     <div className="desk">
+      <aside className="side">
+        <div className="side-brand">
+          <span className="mark">Niji</span>
+          <strong>{name}</strong>
+        </div>
+        <nav className="side-nav" aria-label="Niji">
+          {TABS.map((item) => (
+            <TabButton key={item.id} item={item} tab={tab} onPick={(id) => go(pathForTab(id))} />
+          ))}
+        </nav>
+        <button type="button" className="text-btn side-foot" onClick={leave}>
+          Log out
+        </button>
+      </aside>
       <div className="phone">
         <header className="phone-top">
           <div>
             <p>Niji</p>
-            <strong>{account?.name || 'On this device'}</strong>
+            <strong>{name}</strong>
           </div>
-          <button
-            type="button"
-            className="text-btn"
-            onClick={() => {
-              logoutAccount()
-              go('/')
-            }}
-          >
+          <button type="button" className="text-btn" onClick={leave}>
             Log out
           </button>
         </header>
@@ -41,19 +53,31 @@ export function AppFrame({ tab }: { tab: AppTab }) {
           {tab === 'daily' ? <DailyScreen /> : null}
           {tab === 'play' ? <PlayScreen /> : null}
         </main>
-        <nav className="tabbar" aria-label="App">
-          {TABS.map((item) => {
-            const Icon = item.icon
-            const on = tab === item.id
-            return (
-              <button key={item.id} type="button" className={on ? 'tab on' : 'tab'} aria-current={on ? 'page' : undefined} onClick={() => go(pathForTab(item.id))}>
-                <Icon size={18} />
-                {item.label}
-              </button>
-            )
-          })}
+        <nav className="tabbar" aria-label="Niji">
+          {TABS.map((item) => (
+            <TabButton key={item.id} item={item} tab={tab} onPick={(id) => go(pathForTab(id))} />
+          ))}
         </nav>
       </div>
     </div>
+  )
+}
+
+function TabButton({
+  item,
+  tab,
+  onPick,
+}: {
+  item: (typeof TABS)[number]
+  tab: AppTab
+  onPick: (id: AppTab) => void
+}) {
+  const Icon = item.icon
+  const on = tab === item.id
+  return (
+    <button type="button" className={on ? 'tab on' : 'tab'} aria-current={on ? 'page' : undefined} onClick={() => onPick(item.id)}>
+      <Icon size={18} />
+      {item.label}
+    </button>
   )
 }
