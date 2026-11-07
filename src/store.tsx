@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { dateKey, roundMoney } from './lib/format'
 import { safeAudioSrc, safeImageSrc } from './lib/images'
+import { asKdfParams, asSealedBox, deriveKey, newKdfParams, open, seal, type KdfParams, type SealedBox } from './lib/crypto'
 import {
   MAX_BODY,
   MAX_NAME,
@@ -38,7 +39,7 @@ function nowIso() {
 }
 
 function baseSettings(): Settings {
-  return { displayName: 'N', monthlyBudget: null, vaultPin: null }
+  return { displayName: 'N', monthlyBudget: null, vaultLock: null }
 }
 
 function emptyData(): AppData {
@@ -46,7 +47,7 @@ function emptyData(): AppData {
     notes: [],
     tasks: [],
     events: [],
-    vault: [],
+    vault: null,
     documents: [],
     expenses: [],
     gallery: [],
@@ -257,20 +258,67 @@ function mapFolderItem(row: Record<string, unknown>): FolderItem | null {
   return { id, title, body: asString(row.body).slice(0, MAX_BODY), createdAt: asDateString(row.createdAt) }
 }
 
-function mapFolder(row: Record<string, unknown>): PrivacyFolder | null {
+type LegacyFolder = Omit<PrivacyFolder, 'itemCount' | 'kdf' | 'sealed'> & { password: string; items: FolderItem[] }
+
+type Legacy = { folders: LegacyFolder[]; vault: VaultItem[]; vaultPin: string | null }
+
+type Migrated = { folders: PrivacyFolder[]; vault: SealedBox | null; vaultLock: KdfParams | null }
+
+function folderMeta(row: Record<string, unknown>) {
   const id = asString(row.id)
   const name = clip(asString(row.name), 60)
-  const password = asString(row.password)
-  if (!id || !name || password.length < 4) return null
+  if (!id || !name) return null
   return {
     id,
     name,
-    password: password.slice(0, 40),
     accent: /^#[0-9a-fA-F]{6}$/.test(asString(row.accent)) ? asString(row.accent) : '#e7a15a',
     hideTitles: row.hideTitles === true,
     note: asString(row.note).slice(0, 400),
-    items: mapItems(row.items, mapFolderItem),
     createdAt: asDateString(row.createdAt),
+  }
+}
+
+function mapFolder(row: Record<string, unknown>): PrivacyFolder | null {
+  const meta = folderMeta(row)
+  const kdf = asKdfParams(row.kdf)
+  const sealed = asSealedBox(row.sealed)
+  if (!meta || !kdf || !sealed) return null
+  const itemCount = typeof row.itemCount === 'number' && Number.isInteger(row.itemCount) && row.itemCount >= 0 ? row.itemCount : 0
+  return { ...meta, itemCount, kdf, sealed }
+}
+
+function mapLegacyFolder(row: Record<string, unknown>): LegacyFolder | null {
+  const meta = folderMeta(row)
+  const password = asString(row.password)
+  if (!meta || password.length < 4 || 'sealed' in row) return null
+  return { ...meta, password: password.slice(0, 40), items: mapItems(row.items, mapFolderItem) }
+}
+
+async function sealFolder(meta: Omit<PrivacyFolder, 'itemCount' | 'kdf' | 'sealed'>, password: string, items: FolderItem[]) {
+  const kdf = newKdfParams()
+  const key = await deriveKey(password, kdf)
+  const folder: PrivacyFolder = { ...meta, itemCount: items.length, kdf, sealed: await seal(key, items) }
+  return { folder, key }
+}
+
+/** Encrypts plain-text folders and vault data written by earlier versions. */
+async function migrateLegacy(legacy: Legacy): Promise<Migrated> {
+  const folders = await Promise.all(
+    legacy.folders.map(async ({ password, items, ...meta }) => (await sealFolder(meta, password, items)).folder),
+  )
+  if (!legacy.vaultPin) return { folders, vault: null, vaultLock: null }
+  const vaultLock = newKdfParams()
+  const vault = await seal(await deriveKey(legacy.vaultPin, vaultLock), legacy.vault)
+  return { folders, vault, vaultLock }
+}
+
+function applyMigrated(data: AppData, migrated: Migrated): AppData {
+  const ids = new Set(migrated.folders.map((folder) => folder.id))
+  return {
+    ...data,
+    folders: [...migrated.folders, ...data.folders.filter((folder) => !ids.has(folder.id))],
+    vault: migrated.vault ?? data.vault,
+    settings: { ...data.settings, vaultLock: migrated.vaultLock ?? data.settings.vaultLock },
   }
 }
 
@@ -291,7 +339,9 @@ function mapActivity(row: Record<string, unknown>): Activity | null {
   }
 }
 
-function normalize(raw: unknown): AppData | null {
+type Loaded = { data: AppData; legacy: Legacy | null }
+
+function normalize(raw: unknown): Loaded | null {
   if (!raw || typeof raw !== 'object') return null
   const outer = raw as Record<string, unknown>
   const source =
@@ -304,16 +354,24 @@ function normalize(raw: unknown): AppData | null {
       : {}
   const budget = settingsRaw.monthlyBudget
   const pin = asString(settingsRaw.vaultPin)
+  const vaultPin = /^\d{4,6}$/.test(pin) ? pin : null
   const settings: Settings = {
     displayName: clip(asString(settingsRaw.displayName, 'N'), 40) || 'N',
     monthlyBudget: typeof budget === 'number' && Number.isFinite(budget) && budget >= 0 ? roundMoney(budget) : null,
-    vaultPin: /^\d{4,6}$/.test(pin) ? pin : null,
+    vaultLock: asKdfParams(settingsRaw.vaultLock),
   }
-  return {
+  const vault = asSealedBox(source.vault)
+  const legacyVault = mapItems(source.vault, mapVault)
+  const legacyFolders = mapItems(source.folders, mapLegacyFolder)
+  const legacy: Legacy | null =
+    legacyFolders.length > 0 || vaultPin || legacyVault.length > 0
+      ? { folders: legacyFolders, vault: legacyVault, vaultPin }
+      : null
+  const data: AppData = {
     notes: mapItems(source.notes, mapNote),
     tasks: mapItems(source.tasks, mapTask),
     events: mapItems(source.events, mapEvent),
-    vault: mapItems(source.vault, mapVault),
+    vault: vault && settings.vaultLock ? vault : null,
     documents: mapItems(source.documents, mapDocument),
     expenses: mapItems(source.expenses, mapExpense),
     gallery: mapItems(source.gallery, mapGallery),
@@ -321,18 +379,19 @@ function normalize(raw: unknown): AppData | null {
     inbox: mapItems(source.inbox, mapInbox),
     folders: mapItems(source.folders, mapFolder),
     activity: mapItems(source.activity, mapActivity).slice(0, 40),
-    settings,
+    settings: vault ? settings : { ...settings, vaultLock: null },
     initialized: true,
   }
+  return { data, legacy }
 }
 
-function load(): AppData {
+function load(): Loaded {
   try {
     const raw = localStorage.getItem(KEY)
-    if (!raw) return seed()
-    return normalize(JSON.parse(raw)) ?? seed()
+    if (!raw) return { data: seed(), legacy: null }
+    return normalize(JSON.parse(raw)) ?? { data: seed(), legacy: null }
   } catch {
-    return seed()
+    return { data: seed(), legacy: null }
   }
 }
 
@@ -358,9 +417,16 @@ type KeepInput = { kind: KeepKind; title: string; body: string; imageDataUrl?: s
 type InboxInput = { kind: InboxKind; author: string; text: string; imageDataUrl?: string; audioDataUrl?: string }
 type FolderInput = { name: string; password: string; accent: string; note: string }
 
+/** An unlocked folder: its key and decrypted items live only in memory. */
+export type FolderSession = { id: string; key: CryptoKey; items: FolderItem[] }
+
+type VaultSession = { key: CryptoKey; items: VaultItem[] }
+
 export type StoreApi = {
   data: AppData
+  migrating: boolean
   vaultLocked: boolean
+  vaultItems: VaultItem[]
   persistError: string | null
   toast: string | null
   dismissToast: () => void
@@ -388,44 +454,60 @@ export type StoreApi = {
   deleteKeep: (id: string) => void
   addInbox: (input: InboxInput) => void
   deleteInbox: (id: string) => void
-  addFolder: (input: FolderInput) => void
+  addFolder: (input: FolderInput) => Promise<void>
   updateFolder: (id: string, input: { name: string; accent: string; hideTitles: boolean; note: string }) => void
-  changeFolderPassword: (id: string, current: string, next: string) => boolean
+  unlockFolder: (id: string, password: string) => Promise<FolderSession | null>
+  saveFolderItems: (session: FolderSession, items: FolderItem[]) => Promise<FolderSession>
+  changeFolderPassword: (id: string, current: string, next: string) => Promise<FolderSession | null>
   deleteFolder: (id: string) => void
-  addFolderItem: (folderId: string, input: { title: string; body: string }) => void
-  deleteFolderItem: (folderId: string, itemId: string) => void
-  addVault: (input: VaultInput) => void
-  updateVault: (id: string, input: VaultInput) => void
-  deleteVault: (id: string) => void
+  addVault: (input: VaultInput) => Promise<boolean>
+  updateVault: (id: string, input: VaultInput) => Promise<boolean>
+  deleteVault: (id: string) => Promise<boolean>
   clearVault: () => void
-  unlockVault: (pin: string) => boolean
+  unlockVault: (pin: string) => Promise<boolean>
   lockVault: () => void
   setDisplayName: (name: string) => void
   setMonthlyBudget: (amount: number | null) => void
-  setVaultPin: (pin: string | null) => void
+  setVaultPin: (pin: string) => Promise<boolean>
   exportData: () => void
-  importData: (raw: unknown) => string | null
+  importData: (raw: unknown) => Promise<string | null>
   clearData: () => void
 }
 
 const StoreContext = createContext<StoreApi | null>(null)
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [data, setData] = useState<AppData>(() => load())
-  const [unlocked, setUnlocked] = useState(false)
+  const [initial] = useState(() => load())
+  const [data, setData] = useState<AppData>(initial.data)
+  const [migrating, setMigrating] = useState(initial.legacy != null)
+  const [vaultSession, setVaultSession] = useState<VaultSession | null>(null)
   const [persistError, setPersistError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const dataRef = useRef(data)
   dataRef.current = data
+  const vaultRef = useRef(vaultSession)
+  vaultRef.current = vaultSession
 
   useEffect(() => {
+    if (!initial.legacy) return
+    migrateLegacy(initial.legacy)
+      .then((migrated) => {
+        setData((current) => applyMigrated(current, migrated))
+        setMigrating(false)
+      })
+      .catch(() => setPersistError('Niji could not encrypt older folders on this device. Reload to try again.'))
+  }, [initial])
+
+  useEffect(() => {
+    // Until legacy data is encrypted, keep the old copy on disk rather than overwrite it without those folders.
+    if (migrating) return
     try {
       localStorage.setItem(KEY, JSON.stringify(data))
       setPersistError(null)
     } catch {
       setPersistError('This device is out of room for more saved data. Export a backup or remove a large gallery image.')
     }
-  }, [data])
+  }, [data, migrating])
 
   useEffect(() => {
     if (!toast) return
@@ -434,6 +516,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [toast])
 
   const api = useMemo(() => {
+    async function storeVault(key: CryptoKey, items: VaultItem[]) {
+      const vault = await seal(key, items)
+      setData((current) => ({ ...current, vault }))
+      setVaultSession({ key, items })
+    }
     return {
       dismissToast: () => setToast(null),
       showToast: (message: string) => setToast(message),
@@ -679,20 +766,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteInbox: (id: string) => {
         setData((current) => ({ ...current, inbox: current.inbox.filter((item) => item.id !== id) }))
       },
-      addFolder: (input: FolderInput) => {
-        setData((current) => {
-          const folder: PrivacyFolder = {
-            id: uid(),
-            name: input.name,
-            password: input.password,
-            accent: input.accent,
-            hideTitles: false,
-            note: input.note,
-            items: [],
-            createdAt: nowIso(),
-          }
-          return withActivity({ ...current, folders: [folder, ...current.folders] }, 'folder', 'Created folder', folder.name, folder.id)
-        })
+      addFolder: async (input: FolderInput) => {
+        const { folder } = await sealFolder(
+          { id: uid(), name: input.name, accent: input.accent, hideTitles: false, note: input.note, createdAt: nowIso() },
+          input.password,
+          [],
+        )
+        setData((current) =>
+          withActivity({ ...current, folders: [folder, ...current.folders] }, 'folder', 'Created folder', folder.name, folder.id),
+        )
       },
       updateFolder: (id: string, input: { name: string; accent: string; hideTitles: boolean; note: string }) => {
         setData((current) => ({
@@ -700,76 +782,85 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           folders: current.folders.map((folder) => (folder.id === id ? { ...folder, ...input } : folder)),
         }))
       },
-      changeFolderPassword: (id: string, currentPassword: string, next: string) => {
+      unlockFolder: async (id: string, password: string) => {
         const folder = dataRef.current.folders.find((item) => item.id === id)
-        if (!folder || folder.password !== currentPassword || next.length < 4) return false
+        if (!folder) return null
+        const key = await deriveKey(password, folder.kdf)
+        const items = await open(key, folder.sealed)
+        if (!Array.isArray(items)) return null
+        return { id, key, items: mapItems(items, mapFolderItem) }
+      },
+      saveFolderItems: async (session: FolderSession, items: FolderItem[]) => {
+        const sealed = await seal(session.key, items)
         setData((current) => ({
           ...current,
-          folders: current.folders.map((item) => (item.id === id ? { ...item, password: next } : item)),
+          folders: current.folders.map((folder) =>
+            folder.id === session.id ? { ...folder, sealed, itemCount: items.length } : folder,
+          ),
         }))
-        return true
+        return { ...session, items }
+      },
+      changeFolderPassword: async (id: string, currentPassword: string, next: string) => {
+        const folder = dataRef.current.folders.find((item) => item.id === id)
+        if (!folder || next.length < 4) return null
+        const currentKey = await deriveKey(currentPassword, folder.kdf)
+        const raw = await open(currentKey, folder.sealed)
+        if (!Array.isArray(raw)) return null
+        const items = mapItems(raw, mapFolderItem)
+        const { folder: resealed, key } = await sealFolder(folder, next, items)
+        setData((current) => ({
+          ...current,
+          folders: current.folders.map((item) =>
+            item.id === id ? { ...item, kdf: resealed.kdf, sealed: resealed.sealed, itemCount: items.length } : item,
+          ),
+        }))
+        return { id, key, items }
       },
       deleteFolder: (id: string) => {
         setData((current) => ({ ...current, folders: current.folders.filter((folder) => folder.id !== id) }))
       },
-      addFolderItem: (folderId: string, input: { title: string; body: string }) => {
-        setData((current) => ({
-          ...current,
-          folders: current.folders.map((folder) =>
-            folder.id === folderId
-              ? { ...folder, items: [{ id: uid(), title: input.title, body: input.body, createdAt: nowIso() }, ...folder.items] }
-              : folder,
-          ),
-        }))
+      addVault: async (input: VaultInput) => {
+        const session = vaultRef.current
+        if (!session) return false
+        const at = nowIso()
+        const item: VaultItem = { id: uid(), ...input, createdAt: at, updatedAt: at }
+        await storeVault(session.key, [item, ...session.items])
+        setData((current) => withActivity(current, 'vault', 'Added vault item'))
+        return true
       },
-      deleteFolderItem: (folderId: string, itemId: string) => {
-        setData((current) => ({
-          ...current,
-          folders: current.folders.map((folder) =>
-            folder.id === folderId ? { ...folder, items: folder.items.filter((item) => item.id !== itemId) } : folder,
-          ),
-        }))
+      updateVault: async (id: string, input: VaultInput) => {
+        const session = vaultRef.current
+        if (!session) return false
+        const items = session.items.map((item) => (item.id === id ? { ...item, ...input, updatedAt: nowIso() } : item))
+        await storeVault(session.key, items)
+        return true
       },
-      addVault: (input: VaultInput) => {
-        setData((current) => {
-          const at = nowIso()
-          const item: VaultItem = { id: uid(), ...input, createdAt: at, updatedAt: at }
-          return withActivity({ ...current, vault: [item, ...current.vault] }, 'vault', 'Added vault item')
-        })
-      },
-      updateVault: (id: string, input: VaultInput) => {
-        setData((current) => ({
-          ...current,
-          vault: current.vault.map((item) => (item.id === id ? { ...item, ...input, updatedAt: nowIso() } : item)),
-        }))
-      },
-      deleteVault: (id: string) => {
-        setData((current) => {
-          if (!current.vault.some((item) => item.id === id)) return current
-          return withActivity(
-            { ...current, vault: current.vault.filter((item) => item.id !== id) },
-            'vault',
-            'Deleted vault item',
-          )
-        })
+      deleteVault: async (id: string) => {
+        const session = vaultRef.current
+        if (!session || !session.items.some((item) => item.id === id)) return false
+        await storeVault(session.key, session.items.filter((item) => item.id !== id))
+        setData((current) => withActivity(current, 'vault', 'Deleted vault item'))
+        return true
       },
       clearVault: () => {
         setData((current) => ({
           ...current,
-          vault: [],
-          settings: { ...current.settings, vaultPin: null },
+          vault: null,
+          settings: { ...current.settings, vaultLock: null },
         }))
-        setUnlocked(false)
+        setVaultSession(null)
         setToast('Vault and PIN cleared on this device.')
       },
-      unlockVault: (pin: string) => {
-        if (pin && pin === dataRef.current.settings.vaultPin) {
-          setUnlocked(true)
-          return true
-        }
-        return false
+      unlockVault: async (pin: string) => {
+        const { vault, settings } = dataRef.current
+        if (!pin || !vault || !settings.vaultLock) return false
+        const key = await deriveKey(pin, settings.vaultLock)
+        const items = await open(key, vault)
+        if (!Array.isArray(items)) return false
+        setVaultSession({ key, items: mapItems(items, mapVault) })
+        return true
       },
-      lockVault: () => setUnlocked(false),
+      lockVault: () => setVaultSession(null),
       setDisplayName: (name: string) => {
         const displayName = clip(name, 40) || 'N'
         setData((current) => ({ ...current, settings: { ...current.settings, displayName } }))
@@ -778,10 +869,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const monthlyBudget = amount != null && amount >= 0 ? roundMoney(amount) : null
         setData((current) => ({ ...current, settings: { ...current.settings, monthlyBudget } }))
       },
-      setVaultPin: (pin: string | null) => {
-        if (pin != null && !/^\d{4,6}$/.test(pin)) return
-        setData((current) => ({ ...current, settings: { ...current.settings, vaultPin: pin } }))
-        setUnlocked(Boolean(pin))
+      setVaultPin: async (pin: string) => {
+        if (!/^\d{4,6}$/.test(pin)) return false
+        if (dataRef.current.settings.vaultLock && !vaultRef.current) return false
+        const vaultLock = newKdfParams()
+        const key = await deriveKey(pin, vaultLock)
+        const items = vaultRef.current?.items ?? []
+        const vault = await seal(key, items)
+        setData((current) => ({ ...current, vault, settings: { ...current.settings, vaultLock } }))
+        setVaultSession({ key, items })
+        return true
       },
       exportData: () => {
         const payload = {
@@ -801,17 +898,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         URL.revokeObjectURL(url)
         setToast('Backup downloaded.')
       },
-      importData: (raw: unknown) => {
+      importData: async (raw: unknown) => {
         const next = normalize(raw)
         if (!next) return 'Choose a backup file exported from Niji.'
-        setData(next)
-        setUnlocked(false)
+        setData(next.legacy ? applyMigrated(next.data, await migrateLegacy(next.legacy)) : next.data)
+        setVaultSession(null)
         setToast('Backup imported.')
         return null
       },
       clearData: () => {
         setData(emptyData())
-        setUnlocked(false)
+        setVaultSession(null)
         setToast('All saved data on this device was cleared.')
       },
     }
@@ -820,12 +917,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const value = useMemo<StoreApi>(
     () => ({
       data,
-      vaultLocked: Boolean(data.settings.vaultPin) && !unlocked,
+      migrating,
+      vaultLocked: Boolean(data.settings.vaultLock) && !vaultSession,
+      vaultItems: vaultSession?.items ?? [],
       persistError,
       toast,
       ...api,
     }),
-    [api, data, persistError, toast, unlocked],
+    [api, data, migrating, persistError, toast, vaultSession],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

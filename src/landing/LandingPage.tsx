@@ -170,15 +170,19 @@ function Signup({
   onDone: () => void
   onClose: () => void
   onLogin: () => void
-  signup: (input: { name: string; email: string; password: string }) => { error?: string }
+  signup: (input: { name: string; email: string; password: string }) => Promise<{ error?: string }>
 }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
-  function submit(event: FormEvent) {
+  const [busy, setBusy] = useState(false)
+  async function submit(event: FormEvent) {
     event.preventDefault()
-    const result = signup({ name, email, password })
+    if (busy) return
+    setBusy(true)
+    const result = await signup({ name, email, password })
+    setBusy(false)
     if (result.error) setError(result.error)
     else onDone()
   }
@@ -193,7 +197,7 @@ function Signup({
       <label>Name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" /></label>
       <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" /></label>
       <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></label>
-      <button type="submit" className="solid">Create account</button>
+      <button type="submit" className="solid" disabled={busy}>Create account</button>
       <p className="promo-switch">Already have a Niji account? <button type="button" onClick={onLogin}>Log in</button></p>
     </form>
   )
@@ -210,16 +214,20 @@ function Login({
   onDone: () => void
   onClose: () => void
   onSignup: () => void
-  login: (input: { email: string; password: string }) => { error?: string }
+  login: (input: { email: string; password: string }) => Promise<{ error?: string }>
   accountName?: string
   onContinue?: () => void
 }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
-  function submit(event: FormEvent) {
+  const [busy, setBusy] = useState(false)
+  async function submit(event: FormEvent) {
     event.preventDefault()
-    const result = login({ email, password })
+    if (busy) return
+    setBusy(true)
+    const result = await login({ email, password })
+    setBusy(false)
     if (result.error) setError(result.error)
     else onDone()
   }
@@ -236,7 +244,7 @@ function Login({
       {error ? <p className="error-text">{error}</p> : null}
       <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" /></label>
       <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>
-      <button type="submit" className="solid">Log in</button>
+      <button type="submit" className="solid" disabled={busy}>Log in</button>
       <p className="promo-switch">New to Niji? <button type="button" onClick={onSignup}>Sign up</button></p>
     </form>
   )

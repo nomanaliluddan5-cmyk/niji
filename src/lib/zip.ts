@@ -135,7 +135,8 @@ export function downloadWindowsPacket() {
     '3. Sign up or log in, in either order. The Windows download does not require an account.',
     '4. Use Save, Folders, Daily, and Play along the bottom.',
     '',
-    'Any account you create is stored only in this browser, as plain text.',
+    'Any account you create is stored only in this browser. Passwords are kept as salted hashes,',
+    'and folder contents are encrypted with their folder password.',
     'Keep this device private.',
     '',
   ].join('\r\n')

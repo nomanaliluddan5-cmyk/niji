@@ -1,3 +1,5 @@
+import type { KdfParams, SealedBox } from './lib/crypto'
+
 export const MAX_TITLE = 180
 export const MAX_BODY = 20000
 export const MAX_NAME = 80
@@ -62,11 +64,13 @@ export type FolderItem = {
 export type PrivacyFolder = {
   id: string
   name: string
-  password: string
   accent: string
   hideTitles: boolean
   note: string
-  items: FolderItem[]
+  itemCount: number
+  /** Key-derivation salt for the folder password; items are only stored sealed with AES-GCM. */
+  kdf: KdfParams
+  sealed: SealedBox
   createdAt: string
 }
 
@@ -147,14 +151,14 @@ export type Activity = {
 export type Settings = {
   displayName: string
   monthlyBudget: number | null
-  vaultPin: string | null
+  vaultLock: KdfParams | null
 }
 
 export type AppData = {
   notes: Note[]
   tasks: Task[]
   events: CalendarEvent[]
-  vault: VaultItem[]
+  vault: SealedBox | null
   documents: DocumentItem[]
   expenses: Expense[]
   gallery: GalleryItem[]
